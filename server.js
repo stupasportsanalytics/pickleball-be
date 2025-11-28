@@ -22,6 +22,71 @@ pool.connect()
 
 const val = (v) => v === undefined ? null : v;
 
+let LIVE_JSON = null;
+
+function buildPlayerJSON(m) {
+    const a = m.assignment || {};
+
+    // 1️DOUBLES (convert into array of objects)
+    if (a.player_a1 && a.player_a2 && a.player_b1 && a.player_b2) {
+        return {
+            a: [
+                a.player_a1 ? { name: a.player_a1.name } : null,
+                a.player_a2 ? { name: a.player_a2.name } : null
+            ].filter(Boolean),
+            b: [
+                a.player_b1 ? { name: a.player_b1.name } : null,
+                a.player_b2 ? { name: a.player_b2.name } : null
+            ].filter(Boolean)
+        };
+    }
+
+    // 2️SINGLES (object format)
+    if (a.player_a && a.player_b) {
+        return {
+            a: a.player_a ? { name: a.player_a.name } : null,
+            b: a.player_b ? { name: a.player_b.name } : null
+        };
+    }
+
+    // 3️ MIXED / GRAND RALLY
+    if (a.teamA?.mixed1 || a.teamA?.mixed2) {
+        return {
+            a: {
+                mixed1: [
+                    a.teamA?.mixed1?.player1 ? { name: a.teamA.mixed1.player1.name } : null,
+                    a.teamA?.mixed1?.player2 ? { name: a.teamA.mixed1.player2.name } : null
+                ].filter(Boolean),
+                mixed2: [
+                    a.teamA?.mixed2?.player1 ? { name: a.teamA.mixed2.player1.name } : null,
+                    a.teamA?.mixed2?.player2 ? { name: a.teamA.mixed2.player2.name } : null
+                ].filter(Boolean)
+            },
+            b: {
+                mixed1: [
+                    a.teamB?.mixed1?.player1 ? { name: a.teamB.mixed1.player1.name } : null,
+                    a.teamB?.mixed1?.player2 ? { name: a.teamB.mixed1.player2.name } : null
+                ].filter(Boolean),
+                mixed2: [
+                    a.teamB?.mixed2?.player1 ? { name: a.teamB.mixed2.player1.name } : null,
+                    a.teamB?.mixed2?.player2 ? { name: a.teamB.mixed2.player2.name } : null
+                ].filter(Boolean)
+            }
+        };
+    }
+
+    return { a: null, b: null };
+}
+
+
+function parseServeTeam(val) {
+    if (!val) return null;
+    const x = val.toString().trim().charAt(0);
+    return (x === "A" || x === "B") ? x : null;
+}
+
+
+
 // -----------------------------------------------
 // INSERT MATCH (main or submatch)
 app.post("/save_match", async (req, res) => {
@@ -32,82 +97,68 @@ app.post("/save_match", async (req, res) => {
 
     try {
         const isMain = !m.parent_id;
-
-        // -------- Auto-increment match_no for main matches --------
         let matchNo = m.match_no;
 
         if (!m.parent_id) {
-            console.log("🟩 Main match detected → Calculating match_no...");
-
             const r = await pool.query(
                 "SELECT COALESCE(MAX(match_no), 0) AS max_no FROM matches WHERE tie_id = $1 AND parent_id IS NULL",
                 [0]
             );
-
-            console.log("➡ Current MAX match_no:", r.rows[0].max_no);
             matchNo = r.rows[0].max_no + 1;
-            console.log("➡ New match_no will be:", matchNo);
-        } else {
-            console.log("🟦 Submatch detected → Using match_no:", matchNo);
         }
 
-        // FIX serving team
-        const servingTeam = (m.servingTeam ?? m.serving_team ?? null);
-        const firstServeTeam = (m.firstServeTeam ?? m.first_serve_team ?? null);
+        const servingParsed = parseServeTeam(m.servingTeam ?? m.serving_team);
+        const firstServeParsed = parseServeTeam(m.firstServeTeam ?? m.first_serve_team);
 
-        console.log("➡ Serving Team before parse:", servingTeam);
-        console.log("➡ First Serve Team before parse:", firstServeTeam);
-
-        const servingParsed = servingTeam ? servingTeam.toString().trim().charAt(0) : null;
-        const firstServeParsed = firstServeTeam ? firstServeTeam.toString().trim().charAt(0) : null;
-
-        console.log("➡ Parsed Serving Team:", servingParsed);
-        console.log("➡ Parsed First Serve Team:", firstServeParsed);
+        const pj = buildPlayerJSON(m);
 
         const sql = `
-    INSERT INTO matches (
-        id, tie_id, parent_id, match_no, name, type,
-        team_a_id, team_b_id,
-        serving_team, first_serve_team,
-        score_a, score_b,
-        points_a, points_b,
-        completed, winner, golden_point,
-        assignment,
-        player_a, player_b,
-        created_at, updated_at
-    )
-    VALUES (
-        $1, 0, $2, $3, $4, $5,
-        0, 0,
-        $6, $7,
-        $8, $9,
-        $10, $11,
-        $12, $13, $14,
-        $15,
-        $16, $17,
-        NOW(), NOW()
-    )
-    ON CONFLICT (id)
-    DO UPDATE SET
-        parent_id = EXCLUDED.parent_id,
-        match_no = EXCLUDED.match_no,
-        name = EXCLUDED.name,
-        type = EXCLUDED.type,
-        serving_team = EXCLUDED.serving_team,
-        first_serve_team = EXCLUDED.first_serve_team,
-        score_a = EXCLUDED.score_a,
-        score_b = EXCLUDED.score_b,
-        points_a = EXCLUDED.points_a,
-        points_b = EXCLUDED.points_b,
-        completed = EXCLUDED.completed,
-        winner = EXCLUDED.winner,
-        golden_point = EXCLUDED.golden_point,
-        assignment = EXCLUDED.assignment,
-        player_a = EXCLUDED.player_a,
-        player_b = EXCLUDED.player_b,
-        updated_at = NOW()
-`;
-
+        INSERT INTO matches (
+            id, tie_id, parent_id, match_no, name, type,
+            team_a_id, team_b_id,
+            serving_team, first_serve_team,
+            score_a, score_b,
+            points_a, points_b,
+            completed, winner, golden_point,
+            assignment,
+            player_a, player_b,
+            stage, match_type,
+            created_at, updated_at
+        )
+        VALUES (
+            $1, 0, $2, $3, $4, $5,
+            0, 0,
+            $6, $7,
+            $8, $9,
+            $10, $11,
+            $12, $13, $14,
+            $15,
+            $16, $17,
+            $18, $19,
+            NOW(), NOW()
+        )
+        ON CONFLICT (id)
+        DO UPDATE SET
+            parent_id = EXCLUDED.parent_id,
+            match_no = EXCLUDED.match_no,
+            name = EXCLUDED.name,
+            type = EXCLUDED.type,
+            serving_team = EXCLUDED.serving_team,
+            first_serve_team = EXCLUDED.first_serve_team,
+            score_a = EXCLUDED.score_a,
+            score_b = EXCLUDED.score_b,
+            points_a = EXCLUDED.points_a,
+            points_b = EXCLUDED.points_b,
+            completed = EXCLUDED.completed,
+            winner = EXCLUDED.winner,
+            golden_point = EXCLUDED.golden_point,
+            assignment = EXCLUDED.assignment,
+            player_a = EXCLUDED.player_a,
+            player_b = EXCLUDED.player_b,
+            stage = EXCLUDED.stage,
+            match_type = EXCLUDED.match_type,
+            updated_at = NOW()
+        `;
 
         const params = [
             m.id,
@@ -129,24 +180,24 @@ app.post("/save_match", async (req, res) => {
             m.winner || null,
             m.golden_point || false,
 
-            val(m.assignment),
+            JSON.stringify(val(m.assignment)),   
+            JSON.stringify(pj.a),                
+            JSON.stringify(pj.b),
 
-            m.playerA || null,
-            m.playerB || null
+            m.stage || null,        
+            m.match_type || null    
         ];
 
+        await pool.query(sql, params);
 
-        
-        const result = await pool.query(sql, params);
-
-       
-        return res.json({ success: true, result: result.command });
+        return res.json({ success: true });
 
     } catch (err) {
-        
-        return res.status(500).json({ error: err.message, hint: "See server logs" });
+        console.error("ERROR IN /save_match:", err);
+        return res.status(500).json({ error: err.message });
     }
 });
+
 
 
 // -----------------------------------------------
@@ -155,78 +206,95 @@ app.post("/save_match", async (req, res) => {
 app.post("/update_match", async (req, res) => {
     const m = req.body;
 
-
     try {
-        const updateSub = `
-    UPDATE matches SET
-        score_a = $1,
-        score_b = $2,
-        winner = $3,
-        completed = $4,
-        serving_team = $5,
-        first_serve_team = $6,
-        assignment = $7,
-        points_a = $8,
-        points_b = $9,
-        player_a = $10,
-        player_b = $11,
-        updated_at = NOW()
-    WHERE id = $12
-`;
+        console.log("UPDATE_MATCH CALLED WITH:", m);
 
+        // 1️ Fetch the existing match
+        const existingRes = await pool.query(
+            `SELECT points_a, points_b, parent_id
+             FROM matches WHERE id = $1`,
+            [m.id]
+        );
+
+        if (existingRes.rows.length === 0) {
+            return res.status(404).json({ error: "Match not found" });
+        }
+
+        const existing = existingRes.rows[0];
+        const isSub = !!existing.parent_id;   
+
+        // 2️Calculate submatch points (only applied to SUBMATCHES)
         const subPointsA = m.winner === "A" ? 1 : 0;
         const subPointsB = m.winner === "B" ? 1 : 0;
 
-        await pool.query(updateSub, [
+        const newPointsA = isSub ? subPointsA : existing.points_a;
+        const newPointsB = isSub ? subPointsB : existing.points_b;
+
+        const updateSQL = `
+            UPDATE matches SET
+                score_a = $1,
+                score_b = $2,
+                winner = $3,
+                completed = $4,
+                serving_team = $5,
+                first_serve_team = $6,
+                assignment = $7,
+                points_a = $8,
+                points_b = $9,
+                status = $10,
+                updated_at = NOW()
+            WHERE id = $11
+        `;
+
+        await pool.query(updateSQL, [
             m.scoreA ?? m.score_a ?? 0,
             m.scoreB ?? m.score_b ?? 0,
             m.winner || null,
             m.winner ? true : m.completed || false,
-            (m.servingTeam ?? m.serving_team ?? null)?.toString().trim().charAt(0) || null,
-            (m.firstServeTeam ?? m.first_serve_team ?? null)?.toString().trim().charAt(0) || null,
-            val(m.assignment),
-            subPointsA,
-            subPointsB,
-            m.playerA || null,
-            m.playerB || null,
+            parseServeTeam(m.servingTeam),
+            parseServeTeam(m.firstServeTeam),
+            JSON.stringify(m.assignment || null),
+            newPointsA,
+            newPointsB,
+            "Completed",
             m.id
         ]);
 
-        if (!m.parent_id) {
-            return res.json({ success: true, message: "Main match updated" });
+        console.log("✔ MATCH UPDATED");
+
+        // 3️If it's a submatch → update the parent’s total points
+        if (isSub) {
+            console.log("➡ Updating parent aggregated points...");
+
+            const parentRes = await pool.query(
+                `SELECT points_a, points_b FROM matches WHERE id = $1`,
+                [existing.parent_id]
+            );
+
+            const parent = parentRes.rows[0];
+
+            const updatedA = parent.points_a + subPointsA;
+            const updatedB = parent.points_b + subPointsB;
+
+            await pool.query(
+                `UPDATE matches 
+                 SET points_a = $1, points_b = $2, updated_at = NOW()
+                 WHERE id = $3`,
+                [updatedA, updatedB, existing.parent_id]
+            );
+
+            console.log("✔ Parent Updated:", updatedA, updatedB);
+
+            return res.json({
+                success: true,
+                parentUpdated: true,
+                new_parent_points_a: updatedA,
+                new_parent_points_b: updatedB
+            });
         }
 
-        // Update parent aggregated points
-        const getParent = await pool.query(
-            `SELECT points_a, points_b FROM matches WHERE id = $1`,
-            [m.parent_id]
-        );
-
-        const parent = getParent.rows[0];
-
-        const newPointsA = parent.points_a + subPointsA;
-        const newPointsB = parent.points_b + subPointsB;
-
-        const updateParent = `
-            UPDATE matches SET
-                points_a = $1,
-                points_b = $2,
-                updated_at = NOW()
-            WHERE id = $3
-        `;
-
-        await pool.query(updateParent, [
-            newPointsA,
-            newPointsB,
-            m.parent_id
-        ]);
-
-        res.json({
-            success: true,
-            parentUpdated: true,
-            new_parent_points_a: newPointsA,
-            new_parent_points_b: newPointsB
-        });
+        // 4️For main matches → done
+        res.json({ success: true, message: "Main match updated" });
 
     } catch (err) {
         console.error("ERROR in /update_match:", err);
@@ -234,13 +302,31 @@ app.post("/update_match", async (req, res) => {
     }
 });
 
+app.post("/live_json_update", (req, res) => {
+    const { json, liveMatch, tieId } = req.body;
+
+    LIVE_JSON = {
+        tieId,
+        liveMatch,
+        json
+    };
+
+    return res.json({ success: true });
+});
+
+app.post("/live_json_clear", (req, res) => {
+    LIVE_JSON = null;
+    res.json({ success: true });
+});
+
+
+// -----------------------------------------------
 // -----------------------------------------------
 // -----------------------------------------------
 // GET COMPLETED MATCHES WITH SUBMATCHES (with names)
 // -----------------------------------------------
 app.get("/get_matches", async (req, res) => {
     try {
-
         const mains = await pool.query(`
             SELECT * 
             FROM matches
@@ -257,9 +343,10 @@ app.get("/get_matches", async (req, res) => {
                 match_no: main.match_no,
                 points_a: main.points_a,
                 points_b: main.points_b,
+                stage: main.stage || null,
+                match_type: main.match_type || null,
                 submatches: []
             };
-
 
             const subs = await pool.query(`
                 SELECT *
@@ -268,37 +355,56 @@ app.get("/get_matches", async (req, res) => {
                 ORDER BY match_no ASC
             `, [main.id]);
 
+            mainMatch.submatches = subs.rows.map(sub => {
+                let row = {
+                    id: sub.id,
+                    name: sub.name,
+                    match_no: sub.match_no,
+                    score_a: sub.score_a,
+                    score_b: sub.score_b,
+                    winner: sub.winner,
+                    completed: sub.completed,
+                    serving_team: sub.serving_team,
+                    first_serve_team: sub.first_serve_team,
+                    points_a: sub.points_a,
+                    points_b: sub.points_b,
+                    golden_point: sub.golden_point,
+                    status: sub.status || "Upcoming",
+                    playerA: typeof sub.player_a === "string" ? JSON.parse(sub.player_a) : sub.player_a,
+                    playerB: typeof sub.player_b === "string" ? JSON.parse(sub.player_b) : sub.player_b
+                };
 
-            mainMatch.submatches = subs.rows.map(sub => ({
-                id: sub.id,
-                name: sub.name,
-                match_no: sub.match_no,
-                score_a: sub.score_a,
-                score_b: sub.score_b,
-                winner: sub.winner,
-                completed: sub.completed,
-                serving_team: sub.serving_team,
-                first_serve_team: sub.first_serve_team,
-                points_a: sub.points_a,
-                points_b: sub.points_b,
-                golden_point: sub.golden_point,
+                // OVERRIDE ONLY LIVE SUBMATCH
+                if (LIVE_JSON &&
+                    LIVE_JSON.tieId == sub.parent_id &&
+                    LIVE_JSON.liveMatch == sub.match_no) {
 
-               
-                playerA: sub.player_a,
-                playerB: sub.player_b
-            }));
+                    const live = LIVE_JSON.json.tie.matches.find(m => m.id == sub.match_no);
 
+                    if (live) {
+                        row.score_a = live.scoreA;
+                        row.score_b = live.scoreB;
+                        row.serving_team = live.servingTeam;
+                        row.first_serve_team = live.firstServeTeam;
+                        row.status = "Live";
+                    }
+                }
+
+                return row;
+            });
 
             result.push(mainMatch);
         }
 
-        res.json(result);
+        return res.json(result);
 
     } catch (err) {
-        console.error("ERROR in /get_completed_matches:", err);
+        console.error("ERROR in /get_matches:", err);
         res.status(500).json({ error: err.message });
     }
 });
+
+
 
 app.post("/save_team", async (req, res) => {
     const t = req.body;
