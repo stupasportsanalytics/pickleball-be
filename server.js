@@ -24,91 +24,127 @@ const val = (v) => v === undefined ? null : v;
 
 // -----------------------------------------------
 // INSERT MATCH (main or submatch)
-// -----------------------------------------------
 app.post("/save_match", async (req, res) => {
     const m = req.body;
+
+    console.log("🟦 /save_match CALLED");
+    console.log("➡ Incoming payload:", JSON.stringify(m, null, 2));
 
     try {
         const isMain = !m.parent_id;
 
         // -------- Auto-increment match_no for main matches --------
         let matchNo = m.match_no;
+
         if (!m.parent_id) {
+            console.log("🟩 Main match detected → Calculating match_no...");
+
             const r = await pool.query(
-    "SELECT COALESCE(MAX(match_no), 0) AS max_no FROM matches WHERE tie_id = $1 AND parent_id IS NULL",
-    [0]
-);
+                "SELECT COALESCE(MAX(match_no), 0) AS max_no FROM matches WHERE tie_id = $1 AND parent_id IS NULL",
+                [0]
+            );
+
+            console.log("➡ Current MAX match_no:", r.rows[0].max_no);
             matchNo = r.rows[0].max_no + 1;
+            console.log("➡ New match_no will be:", matchNo);
+        } else {
+            console.log("🟦 Submatch detected → Using match_no:", matchNo);
         }
 
-        const sql = `
-            INSERT INTO matches (
-                id, tie_id, parent_id, match_no, name, type,
-                team_a_id, team_b_id,
-                serving_team, first_serve_team,
-                score_a, score_b,
-                points_a, points_b,
-                completed, winner, golden_point,
-                assignment,
-                created_at, updated_at
-            )
-            VALUES (
-                $1, 0, $2, $3, $4, $5,
-                0, 0,
-                $6, $7,
-                $8, $9,
-                $10, $11,
-                $12, $13, $14,
-                $15,
-                NOW(), NOW()
-            )
-            ON CONFLICT (id)
-            DO UPDATE SET
-                parent_id = EXCLUDED.parent_id,
-                match_no = EXCLUDED.match_no,
-                name = EXCLUDED.name,
-                type = EXCLUDED.type,
-                serving_team = EXCLUDED.serving_team,
-                first_serve_team = EXCLUDED.first_serve_team,
-                score_a = EXCLUDED.score_a,
-                score_b = EXCLUDED.score_b,
-                points_a = EXCLUDED.points_a,
-                points_b = EXCLUDED.points_b,
-                completed = EXCLUDED.completed,
-                winner = EXCLUDED.winner,
-                golden_point = EXCLUDED.golden_point,
-                assignment = EXCLUDED.assignment,
-                updated_at = NOW();
-        `;
+        // FIX serving team
+        const servingTeam = (m.servingTeam ?? m.serving_team ?? null);
+        const firstServeTeam = (m.firstServeTeam ?? m.first_serve_team ?? null);
 
-        await pool.query(sql, [
-            m.id,                 
-            m.parent_id,           
-            matchNo,              
-            m.name || null,        
+        console.log("➡ Serving Team before parse:", servingTeam);
+        console.log("➡ First Serve Team before parse:", firstServeTeam);
+
+        const servingParsed = servingTeam ? servingTeam.toString().trim().charAt(0) : null;
+        const firstServeParsed = firstServeTeam ? firstServeTeam.toString().trim().charAt(0) : null;
+
+        console.log("➡ Parsed Serving Team:", servingParsed);
+        console.log("➡ Parsed First Serve Team:", firstServeParsed);
+
+        const sql = `
+    INSERT INTO matches (
+        id, tie_id, parent_id, match_no, name, type,
+        team_a_id, team_b_id,
+        serving_team, first_serve_team,
+        score_a, score_b,
+        points_a, points_b,
+        completed, winner, golden_point,
+        assignment,
+        player_a, player_b,
+        created_at, updated_at
+    )
+    VALUES (
+        $1, 0, $2, $3, $4, $5,
+        0, 0,
+        $6, $7,
+        $8, $9,
+        $10, $11,
+        $12, $13, $14,
+        $15,
+        $16, $17,
+        NOW(), NOW()
+    )
+    ON CONFLICT (id)
+    DO UPDATE SET
+        parent_id = EXCLUDED.parent_id,
+        match_no = EXCLUDED.match_no,
+        name = EXCLUDED.name,
+        type = EXCLUDED.type,
+        serving_team = EXCLUDED.serving_team,
+        first_serve_team = EXCLUDED.first_serve_team,
+        score_a = EXCLUDED.score_a,
+        score_b = EXCLUDED.score_b,
+        points_a = EXCLUDED.points_a,
+        points_b = EXCLUDED.points_b,
+        completed = EXCLUDED.completed,
+        winner = EXCLUDED.winner,
+        golden_point = EXCLUDED.golden_point,
+        assignment = EXCLUDED.assignment,
+        player_a = EXCLUDED.player_a,
+        player_b = EXCLUDED.player_b,
+        updated_at = NOW()
+`;
+
+
+        const params = [
+            m.id,
+            m.parent_id,
+            matchNo,
+            m.name || null,
             (m.type === "main" ? "regular" : m.type || "regular"),
 
-            (m.servingTeam ?? m.serving_team ?? null)?.toString().trim().charAt(0) || null,
-    (m.firstServeTeam ?? m.first_serve_team ?? null)?.toString().trim().charAt(0) || null,
+            servingParsed,
+            firstServeParsed,
 
-            m.score_a || 0,               
-            m.score_b || 0,              
+            m.score_a || 0,
+            m.score_b || 0,
 
-            isMain ? (m.points_a || 0) : 0, 
+            isMain ? (m.points_a || 0) : 0,
             isMain ? (m.points_b || 0) : 0,
 
-            m.completed || false,         
-            m.winner || null,             
-            m.golden_point || false,      
+            m.completed || false,
+            m.winner || null,
+            m.golden_point || false,
 
-            val(m.assignment)             
-        ]);
+            val(m.assignment),
 
-        return res.json({ success: true });
+            m.playerA || null,
+            m.playerB || null
+        ];
+
+
+        
+        const result = await pool.query(sql, params);
+
+       
+        return res.json({ success: true, result: result.command });
 
     } catch (err) {
-        console.error("ERROR in /save_match:", err);
-        res.status(500).json({ error: err.message });
+        
+        return res.status(500).json({ error: err.message, hint: "See server logs" });
     }
 });
 
@@ -122,19 +158,21 @@ app.post("/update_match", async (req, res) => {
 
     try {
         const updateSub = `
-            UPDATE matches SET
-                score_a = $1,
-                score_b = $2,
-                winner = $3,
-                completed = $4,
-                serving_team = $5,
-                first_serve_team = $6,
-                assignment = $7,
-                points_a = $8,
-                points_b = $9,
-                updated_at = NOW()
-            WHERE id = $10
-        `;
+    UPDATE matches SET
+        score_a = $1,
+        score_b = $2,
+        winner = $3,
+        completed = $4,
+        serving_team = $5,
+        first_serve_team = $6,
+        assignment = $7,
+        points_a = $8,
+        points_b = $9,
+        player_a = $10,
+        player_b = $11,
+        updated_at = NOW()
+    WHERE id = $12
+`;
 
         const subPointsA = m.winner === "A" ? 1 : 0;
         const subPointsB = m.winner === "B" ? 1 : 0;
@@ -143,12 +181,14 @@ app.post("/update_match", async (req, res) => {
             m.scoreA ?? m.score_a ?? 0,
             m.scoreB ?? m.score_b ?? 0,
             m.winner || null,
-            m.winner ? true : m.completed || false, 
-             (m.servingTeam ?? m.serving_team ?? null)?.toString().trim().charAt(0) || null, 
-    (m.firstServeTeam ?? m.first_serve_team ?? null)?.toString().trim().charAt(0) || null,
+            m.winner ? true : m.completed || false,
+            (m.servingTeam ?? m.serving_team ?? null)?.toString().trim().charAt(0) || null,
+            (m.firstServeTeam ?? m.first_serve_team ?? null)?.toString().trim().charAt(0) || null,
             val(m.assignment),
             subPointsA,
             subPointsB,
+            m.playerA || null,
+            m.playerB || null,
             m.id
         ]);
 
@@ -200,7 +240,7 @@ app.post("/update_match", async (req, res) => {
 // -----------------------------------------------
 app.get("/get_matches", async (req, res) => {
     try {
-        
+
         const mains = await pool.query(`
             SELECT * 
             FROM matches
@@ -220,7 +260,7 @@ app.get("/get_matches", async (req, res) => {
                 submatches: []
             };
 
-            
+
             const subs = await pool.query(`
                 SELECT *
                 FROM matches
@@ -228,10 +268,10 @@ app.get("/get_matches", async (req, res) => {
                 ORDER BY match_no ASC
             `, [main.id]);
 
-            
+
             mainMatch.submatches = subs.rows.map(sub => ({
                 id: sub.id,
-                name: sub.name,           
+                name: sub.name,
                 match_no: sub.match_no,
                 score_a: sub.score_a,
                 score_b: sub.score_b,
@@ -241,8 +281,13 @@ app.get("/get_matches", async (req, res) => {
                 first_serve_team: sub.first_serve_team,
                 points_a: sub.points_a,
                 points_b: sub.points_b,
-                golden_point: sub.golden_point
+                golden_point: sub.golden_point,
+
+               
+                playerA: sub.player_a,
+                playerB: sub.player_b
             }));
+
 
             result.push(mainMatch);
         }
@@ -332,5 +377,5 @@ app.get("/get_standings", async (req, res) => {
 
 
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`Server running at http://localhost:${PORT}`));
