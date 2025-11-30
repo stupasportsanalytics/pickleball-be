@@ -180,12 +180,12 @@ app.post("/save_match", async (req, res) => {
             m.winner || null,
             m.golden_point || false,
 
-            JSON.stringify(val(m.assignment)),   
-            JSON.stringify(pj.a),                
+            JSON.stringify(val(m.assignment)),
+            JSON.stringify(pj.a),
             JSON.stringify(pj.b),
 
-            m.stage || null,        
-            m.match_type || null    
+            m.stage || null,
+            m.match_type || null
         ];
 
         await pool.query(sql, params);
@@ -221,7 +221,7 @@ app.post("/update_match", async (req, res) => {
         }
 
         const existing = existingRes.rows[0];
-        const isSub = !!existing.parent_id;   
+        const isSub = !!existing.parent_id;
 
         // 2️Calculate submatch points (only applied to SUBMATCHES)
         const subPointsA = m.winner === "A" ? 1 : 0;
@@ -410,18 +410,55 @@ app.post("/save_team", async (req, res) => {
     const t = req.body;
 
     try {
-        const sql = `
+        await pool.query("BEGIN");
+
+        // 1) Get old rank
+        const oldRankQuery = `
+            SELECT rank FROM team_standings WHERE team_id = $1
+        `;
+        const oldRankResult = await pool.query(oldRankQuery, [t.teamId]);
+        const oldRank = oldRankResult.rows[0]?.rank || null;
+
+        const newRank = t.rank;
+
+        // CASE A: Team is moving UP (3 → 1)
+        if (oldRank !== null && newRank < oldRank) {
+            await pool.query(`
+                UPDATE team_standings
+                SET rank = rank + 1
+                WHERE rank >= $1 AND rank < $2 AND team_id != $3
+            `, [newRank, oldRank, t.teamId]);
+        }
+
+        // CASE B: Team is moving DOWN (1 → 3)
+        else if (oldRank !== null && newRank > oldRank) {
+            await pool.query(`
+                UPDATE team_standings
+                SET rank = rank - 1
+                WHERE rank <= $1 AND rank > $2 AND team_id != $3
+            `, [newRank, oldRank, t.teamId]);
+        }
+
+        // CASE C: New team (oldRank = null)
+        else if (oldRank === null) {
+            await pool.query(`
+                UPDATE team_standings
+                SET rank = rank + 1
+                WHERE rank >= $1
+            `, [newRank]);
+        }
+
+        // NOW INSERT/UPDATE TEAM
+        const upsertSQL = `
             INSERT INTO team_standings (
                 team_id, team_name,
                 ties_played, ties_won, ties_draw, ties_lost,
                 tie_points, match_points_won,
                 qualified,
+                rank,
                 created_at, updated_at
             ) VALUES (
-                $1,$2,
-                $3,$4,$5,$6,
-                $7,$8,
-                $9,
+                $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
                 NOW(), NOW()
             )
             ON CONFLICT (team_id)
@@ -434,38 +471,42 @@ app.post("/save_team", async (req, res) => {
                 tie_points = EXCLUDED.tie_points,
                 match_points_won = EXCLUDED.match_points_won,
                 qualified = EXCLUDED.qualified,
+                rank = EXCLUDED.rank,
                 updated_at = NOW();
         `;
 
-        await pool.query(sql, [
+        await pool.query(upsertSQL, [
             t.teamId,
             t.teamName,
-
             t.tiesPlayed,
             t.tiesWon,
             t.tiesDraw,
             t.tiesLost,
-
             t.tiePoints,
             t.matchPointsWon,
-
-            t.qualified
+            t.qualified,
+            newRank
         ]);
 
+        await pool.query("COMMIT");
         res.json({ success: true });
 
     } catch (err) {
-        console.error("ERROR in /save_team:", err);
+        await pool.query("ROLLBACK");
+        console.error("ERR:", err);
         res.status(500).json({ error: err.message });
     }
 });
+
+
+
 
 app.get("/get_standings", async (req, res) => {
     try {
         const sql = `
             SELECT *
-            FROM team_standings
-            ORDER BY tie_points DESC, match_points_won DESC;
+FROM team_standings
+ORDER BY rank::integer ASC;
         `;
 
         const result = await pool.query(sql);
@@ -483,5 +524,6 @@ app.get("/get_standings", async (req, res) => {
 
 
 
-const PORT = process.env.PORT || 3000;
+
+const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`Server running at http://localhost:${PORT}`));
