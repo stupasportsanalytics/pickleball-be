@@ -24,6 +24,18 @@ const val = (v) => v === undefined ? null : v;
 
 let LIVE_JSON = null;
 
+// server.js (near the top, after imports)
+
+// ... other setup code ...
+
+
+let STANDINGS_CACHE = {
+    ts: 0,
+    data: null
+};
+
+
+
 function buildPlayerJSON(m) {
     const a = m.assignment || {};
 
@@ -503,26 +515,48 @@ app.post("/save_team", async (req, res) => {
 
 app.get("/get_standings", async (req, res) => {
     try {
-        const sql = `
-            SELECT *
-FROM team_standings
-ORDER BY rank::integer ASC;
-        `;
+        const ttl = parseInt(req.query.ttl) || 5000;
+        const forceRefresh = req.query.refresh === '1' || req.query.refresh === 'true';
 
+        // Return cached result when fresh and not forced
+        if (!forceRefresh && STANDINGS_CACHE.data && (Date.now() - STANDINGS_CACHE.ts) < ttl) {
+            const age = Date.now() - STANDINGS_CACHE.ts;
+            return res.json({
+                success: true,
+                standings: STANDINGS_CACHE.data,
+                cached: true,
+                cached_age_ms: age
+            });
+        }
+
+        const sql = `SELECT * FROM team_standings ORDER BY rank::integer ASC;`;
+
+        // If explain requested (for profiling), run EXPLAIN ANALYZE and return plan (dev only)
+        if (req.query.explain === '1' || req.query.explain === 'true') {
+            const explainSql = `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${sql}`;
+            const explainRes = await pool.query(explainSql);
+            return res.json({ success: true, explain: explainRes.rows });
+        }
+
+        const start = process.hrtime.bigint();
         const result = await pool.query(sql);
+        const end = process.hrtime.bigint();
+        const durationMs = Number(end - start) / 1e6;
 
+
+        STANDINGS_CACHE = { ts: Date.now(), data: result.rows };
+
+       
         res.json({
             success: true,
-            standings: result.rows
+            standings: result.rows,
+            duration_ms: durationMs
         });
-
     } catch (err) {
         console.error("ERROR in /get_standings:", err);
         res.status(500).json({ error: err.message });
     }
 });
-
-
 
 
 const PORT = process.env.PORT || 3000;
